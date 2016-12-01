@@ -123,4 +123,5 @@ usr sys idl wai hiq siq| read  writ| recv  send|  in   out | int   csw
   7   8  79   0   0   6|   0     0 | 147M  147M|   0     0 |2966   366
 </pre>
 
-Winlin 2014.12
+2016-12-01 09:41:46
+</pre>
