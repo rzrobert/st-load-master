@@ -1,0 +1,215 @@
+#!/bin/bash
+
+GLOBAL_FILE_MAKEFILE="Makefile"
+GLOBAL_DIR_OBJS="objs"
+
+mkdir -p ${GLOBAL_DIR_OBJS}
+
+#####################################################################################
+# prepare the depends tools
+#####################################################################################
+OS_IS_OSX=NO
+uname -s|grep Darwin >/dev/null 2>&1
+ret=$?; if [[ 0 -eq $ret ]]; then
+    OS_IS_OSX=YES
+fi
+echo "Is OSX: ${OS_IS_OSX}"
+
+# check the arm flag file, if flag changed, need to rebuild the st.
+_ST_MAKE=linux-debug && _ST_EXTRA_CFLAGS="-DMALLOC_STACK -DMD_HAVE_EPOLL"
+# for osx, use darwin for st, donot use epoll.
+if [ $OS_IS_OSX = YES ]; then
+    _ST_MAKE=darwin-debug && _ST_EXTRA_CFLAGS="-DMD_HAVE_KQUEUE"
+fi
+
+# st-1.9
+if [[ -f ${GLOBAL_DIR_OBJS}/st-1.9/obj/libst.a ]]; then
+    echo "st-1.9t is ok.";
+else
+    echo "build st-1.9t"; 
+    (
+        rm -rf ${GLOBAL_DIR_OBJS}/st-1.9 && cd ${GLOBAL_DIR_OBJS} && unzip ../3rdparty/st-1.9.zip && cd st-1.9 && 
+        patch -p0 < ../../3rdparty/patches/1.st.arm.patch &&
+        make EXTRA_CFLAGS="${_ST_EXTRA_CFLAGS}" ${_ST_MAKE}
+    )
+fi
+# check status
+ret=$?; if [[ $ret -ne 0 ]]; then echo "build st-1.9 failed, ret=$ret"; exit $ret; fi
+if [ ! -f ${GLOBAL_DIR_OBJS}/st-1.9/obj/libst.a ]; then echo "build st-1.9 failed."; exit -1; fi
+
+SED="sed -i"
+if [ $OS_IS_OSX = YES ]; then SED="sed -i ''"; fi
+
+# http-parser-2.1
+if [[ -f ${GLOBAL_DIR_OBJS}/http-parser-2.1/http_parser.h && -f ${GLOBAL_DIR_OBJS}/http-parser-2.1/libhttp_parser.a ]]; then
+    echo "http-parser-2.1 is ok.";
+else
+    echo "build http-parser-2.1";
+    (
+        rm -rf ${GLOBAL_DIR_OBJS}/http-parser-2.1 && cd ${GLOBAL_DIR_OBJS} && unzip ../3rdparty/http-parser-2.1.zip && 
+        cd http-parser-2.1 && 
+        $SED "s/CPPFLAGS_FAST +=.*$/CPPFLAGS_FAST = \$\(CPPFLAGS_DEBUG\)/g" Makefile &&
+        $SED "s/CFLAGS_FAST =.*$/CFLAGS_FAST = \$\(CFLAGS_DEBUG\)/g" Makefile &&
+        make package
+    )
+fi
+# check status
+ret=$?; if [[ $ret -ne 0 ]]; then echo "build http-parser-2.1 failed, ret=$ret"; exit $ret; fi
+if [[ ! -f ${GLOBAL_DIR_OBJS}/http-parser-2.1/http_parser.h ]]; then echo "build http-parser-2.1 failed"; exit -1; fi
+if [[ ! -f ${GLOBAL_DIR_OBJS}/http-parser-2.1/libhttp_parser.a ]]; then echo "build http-parser-2.1 failed"; exit -1; fi
+
+#####################################################################################
+# generate Makefile.
+#####################################################################################
+echo "generate Makefile"
+
+cat << END > ${GLOBAL_FILE_MAKEFILE}
+.PHONY: default help clean http hls all _prepare_dir
+default: all
+
+help:
+	@echo "Usage: make <help>|<clean>|<http>|<hls>|<rtmp>|<all>"
+	@echo "  help       display this help menu"
+	@echo "  clean      cleanup project"
+	@echo "  http       build the http load test tool over st(state-threads)"
+	@echo "  hls        build the hls load test tool over st(state-threads)"
+	@echo "  rtmp       build the rtmp load test tool over st(state-threads)"
+	@echo "  all        build the http/hls load test tool over st(state-threads)"
+
+clean: 
+	(cd ${GLOBAL_DIR_OBJS}; rm -rf src sb_*_load)
+
+http: _prepare_dir
+	@echo "build the http load test tool over st(state-threads)"
+	\$(MAKE) -f ${GLOBAL_DIR_OBJS}/${GLOBAL_FILE_MAKEFILE} sb_http_load
+
+rtmp: _prepare_dir
+	@echo "build the http load test tool over st(state-threads)"
+	\$(MAKE) -f ${GLOBAL_DIR_OBJS}/${GLOBAL_FILE_MAKEFILE} sb_rtmp_load
+	\$(MAKE) -f ${GLOBAL_DIR_OBJS}/${GLOBAL_FILE_MAKEFILE} sb_rtmp_load_fast
+	\$(MAKE) -f ${GLOBAL_DIR_OBJS}/${GLOBAL_FILE_MAKEFILE} sb_rtmp_publish
+
+hls: _prepare_dir
+	@echo "build the HLS load test tool over st(state-threads)"
+	\$(MAKE) -f ${GLOBAL_DIR_OBJS}/${GLOBAL_FILE_MAKEFILE} sb_hls_load
+
+all: _prepare_dir
+	@echo "build the http/hls/rtmp load test tool over st(state-threads)"
+	\$(MAKE) -f ${GLOBAL_DIR_OBJS}/${GLOBAL_FILE_MAKEFILE} sb_http_load
+	\$(MAKE) -f ${GLOBAL_DIR_OBJS}/${GLOBAL_FILE_MAKEFILE} sb_hls_load
+	\$(MAKE) -f ${GLOBAL_DIR_OBJS}/${GLOBAL_FILE_MAKEFILE} sb_rtmp_load
+	\$(MAKE) -f ${GLOBAL_DIR_OBJS}/${GLOBAL_FILE_MAKEFILE} sb_rtmp_load_fast
+	\$(MAKE) -f ${GLOBAL_DIR_OBJS}/${GLOBAL_FILE_MAKEFILE} sb_rtmp_publish
+	@echo "build ok, you can:"
+	@echo "     ./objs/sb_http_load"
+	@echo "     ./objs/sb_hls_load"
+	@echo "     ./objs/sb_rtmp_load"
+	@echo "     ./objs/sb_rtmp_load_fast"
+	@echo "     ./objs/sb_rtmp_publish"
+
+# the ./configure will generate it.
+_prepare_dir:
+END
+
+echo 'generate Makefile ok!'
+
+# the performance analysis, uncomments the following when use gperf to analysis the performance. see third-party/readme.txt
+#Performance="-pg"
+#PerformanceLink="-pg"
+# enable gdb debug
+GDBDebug="-g -O0"
+# the warning level.
+WarnLevel="-Wall -Wextra"
+# the compile standard.
+CppStd="-std=c++98"
+# other macros defined
+UserMacros="-DSRS_HIJACK_IO -DSRS_DISABLE_LOG"
+# the cxx flag generated.
+CXXFLAGS="${CppStd} ${WarnLevel} ${GDBDebug} ${Performance} ${UserMacros}"
+cat << END > ${GLOBAL_DIR_OBJS}/${GLOBAL_FILE_MAKEFILE}
+CXXFLAGS = ${CXXFLAGS}
+GCC = g++
+LINK = \$(GCC)
+AR = ar
+
+.PHONY: default sb_http_load sb_hls_load sb_rtmp_load sb_rtmp_load_fast sb_rtmp_publish
+
+default:
+
+END
+
+# Libraries
+LibSTRoot="${GLOBAL_DIR_OBJS}/st-1.9/obj"
+LibSTfile="${LibSTRoot}/libst.a"
+LibHttpParserRoot="${GLOBAL_DIR_OBJS}/http-parser-2.1"
+LibHttpParserfile="${LibHttpParserRoot}/libhttp_parser.a"
+
+#Core Module
+MODULE_ID="CORE" 
+MODULE_DEPENDS=() 
+ModuleLibIncs=(${LibHttpParserRoot})
+MODULE_FILES=("htl_core_log" "htl_core_error" "htl_core_uri" "htl_core_aggregate_ret")
+MODULE_DIR="src/core" . auto/modules.sh
+CORE_OBJS="${MODULE_OBJS[@]}"
+
+#OS Module
+MODULE_ID="OS" 
+MODULE_DEPENDS=("CORE") 
+ModuleLibIncs=(${LibSTRoot})
+MODULE_FILES=("htl_os_st")
+MODULE_DIR="src/os" . auto/modules.sh
+OS_OBJS="${MODULE_OBJS[@]}"
+
+#APP Module
+MODULE_ID="APP" 
+MODULE_DEPENDS=("CORE" "OS") 
+ModuleLibIncs=(${LibSTRoot} ${LibHttpParserRoot})
+MODULE_FILES=("htl_app_hls_load" "htl_app_http_load" "htl_app_http_client" "htl_app_rtmp_play" 
+    "htl_app_m3u8_parser" "htl_app_task_base" "htl_app_rtmp_load" "htl_app_rtmp_protocol"
+    "htl_app_rtmp_publish" "htl_app_srs_hijack")
+MODULE_DIR="src/app" . auto/modules.sh
+APP_OBJS="${MODULE_OBJS[@]}"
+
+#Main Module
+MODULE_ID="MAIN" 
+MODULE_DEPENDS=("CORE" "OS" "APP") 
+ModuleLibIncs=(${LibSTRoot} ${LibHttpParserRoot})
+MODULE_FILES=("htl_main_hls_load" "htl_main_http_load" "htl_main_rtmp_load" "htl_main_rtmp_load_fast" "htl_main_utility" "htl_main_rtmp_publish")
+MODULE_DIR="src/main" . auto/modules.sh
+MAIN_OBJS="${MODULE_OBJS[@].o}"
+
+# all main entrances
+MAIN_ENTRANCES=("htl_main_hls_load" "htl_main_http_load" "htl_main_rtmp_load" "htl_main_rtmp_load_fast" "htl_main_rtmp_publish")
+
+# http load test tool over st(state-threads)
+ModuleLibFiles=(${LibSTfile} ${LibHttpParserfile})
+MODULE_OBJS="${CORE_OBJS[@]} ${OS_OBJS[@]} ${APP_OBJS[@]} ${MAIN_OBJS[@]}"
+BUILD_KEY="sb_http_load" APP_MAIN="htl_main_http_load" APP_NAME="sb_http_load" LINK_OPTIONS="-ldl" SO_PATH="" . auto/apps.sh
+
+# rtmp play load test tool over st(state-threads)
+ModuleLibFiles=(${LibSTfile} ${LibHttpParserfile})
+MODULE_OBJS="${CORE_OBJS[@]} ${OS_OBJS[@]} ${APP_OBJS[@]} ${MAIN_OBJS[@]}"
+BUILD_KEY="sb_rtmp_load" APP_MAIN="htl_main_rtmp_load" APP_NAME="sb_rtmp_load" LINK_OPTIONS="-ldl" SO_PATH="" . auto/apps.sh
+
+# rtmp play load test tool over st(state-threads)
+# Remark, the fast algorithm may not work for other RTMP server, it's ok for SRS/GO-SRS.
+ModuleLibFiles=(${LibSTfile} ${LibHttpParserfile})
+MODULE_OBJS="${CORE_OBJS[@]} ${OS_OBJS[@]} ${APP_OBJS[@]} ${MAIN_OBJS[@]}"
+BUILD_KEY="sb_rtmp_load_fast" APP_MAIN="htl_main_rtmp_load_fast" APP_NAME="sb_rtmp_load_fast" LINK_OPTIONS="-ldl" SO_PATH="" . auto/apps.sh
+
+# rtmp publish load test tool over st(state-threads)
+ModuleLibFiles=(${LibSTfile} ${LibHttpParserfile})
+MODULE_OBJS="${CORE_OBJS[@]} ${OS_OBJS[@]} ${APP_OBJS[@]} ${MAIN_OBJS[@]}"
+BUILD_KEY="sb_rtmp_publish" APP_MAIN="htl_main_rtmp_publish" APP_NAME="sb_rtmp_publish" LINK_OPTIONS="-ldl" SO_PATH="" . auto/apps.sh
+
+# hls load test tool over direct TCP.
+ModuleLibFiles=(${LibSTfile} ${LibHttpParserfile})
+MODULE_OBJS="${CORE_OBJS[@]} ${OS_OBJS[@]} ${APP_OBJS[@]} ${MAIN_OBJS[@]}"
+BUILD_KEY="sb_hls_load" APP_MAIN="htl_main_hls_load" APP_NAME="sb_hls_load" LINK_OPTIONS="-ldl" SO_PATH="" . auto/apps.sh
+
+echo 'configure ok! '
+
+# next step.
+echo "you can:"
+echo "\" make \" to build the http/hls load test tools."
+echo "\" make help \" to get the usage of make"
